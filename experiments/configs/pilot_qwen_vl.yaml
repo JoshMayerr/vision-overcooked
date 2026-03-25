@@ -1,0 +1,25 @@
+run_name: pilot_qwen_vl
+layout: new_env
+order: boiled_egg
+level: 1
+horizon: 12
+max_retries: 1
+results_root: results
+debug_capture_frames: false
+persist_sampled_frames: false
+chef:
+  role: chef
+  backend: static
+  model_name: qwen2-vl-pilot
+  static_response:
+    analysis: "I can see the kitchen state, but this scaffold run is using a safe no-op response."
+    plan: "[NONE]"
+    say: "[NOTHING]"
+assistant:
+  role: assistant
+  backend: static
+  model_name: qwen2-vl-pilot
+  static_response:
+    analysis: "I am waiting for a supported action mapping in the scaffold."
+    plan: "[NONE]"
+    say: "[NOTHING]"

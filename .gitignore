@@ -22,7 +22,7 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
-# *.egg-info/
+*.egg-info/
 .installed.cfg
 # *.egg
 MANIFEST
@@ -131,7 +131,6 @@ dmypy.json
 
 *.log
 *.pth
-*.pdf
 *.pkl
 *.zip
 **/.vscode/
@@ -149,9 +148,10 @@ models/
 baseline_models/
 
 wandb/
-experiments/ 
 history/
-results/
+experiments/runs/
+results/**
+!results/.gitkeep
 
 roadmap.md
 
@@ -160,6 +160,4 @@ src/batch_run.sh
 src/batch_run.sh
 
 
-src/embedding_cache.json
-
-
+lib/

@@ -1,0 +1,41 @@
+[project]
+name = "vision-overcooked"
+version = "0.1.0"
+description = "Research scaffold for comparing VLM and LLM collaboration in Overcooked."
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "dtw-python>=1.7.4",
+    "fire>=0.7.1",
+    "httpx>=0.28.1",
+    "openai>=2.29.0",
+    "overcooked-ai",
+    "pandas>=3.0.1",
+    "plotly>=6.6.0",
+    "pydantic>=2.12.5",
+    "pygame>=2.6.1",
+    "pytest>=9.0.2",
+    "pyyaml>=6.0.3",
+    "rich>=14.3.3",
+    "scikit-learn>=1.8.0",
+    "tiktoken>=0.12.0",
+    "transformers>=5.3.0",
+    "websocket-client>=1.9.0",
+    "websockets>=16.0",
+]
+
+[project.scripts]
+vision-overcooked = "vision_overcooked.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+overcooked-ai = { path = "third_party/collab_overcooked/lib/overcooked_ai", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
