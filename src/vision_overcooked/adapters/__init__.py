@@ -1,4 +1,7 @@
 from .agent import (
+    AgentInvocationError,
+    AgentResponseFormatError,
+    OpenAIVisionAgent,
     OpenAICompatibleVisionAgent,
     PlanValidationResult,
     StaticJSONAgent,
@@ -11,6 +14,9 @@ from .evaluation import EvaluationAdapter
 __all__ = [
     "EnvironmentAdapter",
     "EvaluationAdapter",
+    "AgentInvocationError",
+    "AgentResponseFormatError",
+    "OpenAIVisionAgent",
     "OpenAICompatibleVisionAgent",
     "PlanValidationResult",
     "StaticJSONAgent",

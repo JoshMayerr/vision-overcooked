@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class LevelMetrics(BaseModel):
@@ -46,20 +46,16 @@ class AgentTurnResponse(BaseModel):
 
 class AgentConfig(BaseModel):
     role: Literal["chef", "assistant"]
-    backend: Literal["static", "openai_compatible_vision"] = "static"
+    backend: Literal["static", "openai_vision"] = "static"
     model_name: str
     static_response: AgentTurnResponse | None = None
-    endpoint: str | None = None
     api_key_env: str | None = None
 
-    @field_validator("static_response")
-    @classmethod
-    def validate_static_response(
-        cls, value: AgentTurnResponse | None, info
-    ) -> AgentTurnResponse | None:
-        if info.data.get("backend") == "static" and value is None:
+    @model_validator(mode="after")
+    def validate_static_response(self) -> "AgentConfig":
+        if self.backend == "static" and self.static_response is None:
             raise ValueError("Static agents require a static_response.")
-        return value
+        return self
 
 
 class PilotRunConfig(BaseModel):
@@ -86,6 +82,7 @@ class PilotRunConfig(BaseModel):
 class TurnRecord(BaseModel):
     timestep: int
     state_string: str
+    prompt_texts: dict[str, str] = Field(default_factory=dict)
     raw_responses: dict[str, str]
     parsed_responses: dict[str, AgentTurnResponse]
     validator_errors: dict[str, list[str]]

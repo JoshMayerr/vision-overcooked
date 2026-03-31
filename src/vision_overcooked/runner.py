@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 
 from vision_overcooked.adapters import (
+    AgentInvocationError,
+    AgentResponseFormatError,
     EnvironmentAdapter,
     EvaluationAdapter,
     build_agent,
     validate_plan_string,
 )
-from vision_overcooked.schemas import PilotRunConfig, RunRecord, TurnRecord
+from vision_overcooked.schemas import AgentTurnResponse, PilotRunConfig, RunRecord, TurnRecord
 
 
 def _role_context(role: str, order: str, state_string: str, timestep: int) -> str:
@@ -35,6 +37,7 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
     success = False
 
     for timestep in range(config.horizon):
+        prompt_texts = {}
         raw_responses = {}
         parsed_responses = {}
         validator_errors = {"chef": [], "assistant": []}
@@ -44,13 +47,34 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
             feedback = []
             parsed = None
             raw = ""
+            prompt_text = ""
+            invocation_error: AgentInvocationError | None = None
             for _ in range(config.max_retries + 1):
-                raw, parsed = agent.act(
-                    snapshot.frame,
-                    _role_context(role, config.order, snapshot.state_string, snapshot.timestep),
-                    last_messages[teammate_role],
-                    feedback,
-                )
+                try:
+                    result = agent.act(
+                        snapshot.frame,
+                        _role_context(role, config.order, snapshot.state_string, snapshot.timestep),
+                        last_messages[teammate_role],
+                        feedback,
+                    )
+                except AgentResponseFormatError as exc:
+                    prompt_text = exc.prompt_text
+                    raw = exc.raw_response
+                    error_message = str(exc)
+                    feedback = [error_message]
+                    validator_errors[role].append(error_message)
+                    continue
+                except AgentInvocationError as exc:
+                    prompt_text = exc.prompt_text
+                    raw = exc.raw_response
+                    error_message = str(exc)
+                    feedback = [error_message]
+                    validator_errors[role].append(error_message)
+                    invocation_error = exc
+                    continue
+                raw = result.raw_response
+                prompt_text = result.prompt_text
+                parsed = result.parsed_response
                 validation = validate_plan_string(parsed.plan)
                 if validation.valid:
                     break
@@ -58,8 +82,18 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
                 validator_errors[role].extend(validation.errors)
                 if config.max_retries == 0:
                     break
+            if parsed is None:
+                if invocation_error is not None:
+                    raise RuntimeError(
+                        f"Agent {role} failed after {config.max_retries + 1} attempts: {invocation_error}"
+                    ) from invocation_error
+                parsed = AgentTurnResponse(
+                    analysis="Failed to produce valid structured output after retries.",
+                    plan="[NONE]",
+                    say="[NOTHING]",
+                )
+            prompt_texts[role] = prompt_text
             raw_responses[role] = raw
-            assert parsed is not None
             parsed_responses[role] = parsed
 
         chef_validation = validate_plan_string(parsed_responses["chef"].plan)
@@ -74,6 +108,7 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
         turn = TurnRecord(
             timestep=timestep,
             state_string=snapshot.state_string,
+            prompt_texts=prompt_texts,
             raw_responses=raw_responses,
             parsed_responses=parsed_responses,
             validator_errors=validator_errors,

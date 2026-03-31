@@ -1,0 +1,19 @@
+run_name: pilot_openai_vision_dev
+layout: new_env
+order: boiled_egg
+level: 1
+horizon: 8
+max_retries: 1
+results_root: results
+debug_capture_frames: false
+persist_sampled_frames: false
+chef:
+  role: chef
+  backend: openai_vision
+  model_name: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
+assistant:
+  role: assistant
+  backend: openai_vision
+  model_name: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
