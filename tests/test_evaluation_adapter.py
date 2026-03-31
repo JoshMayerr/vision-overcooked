@@ -12,10 +12,11 @@ def test_evaluation_adapter_exports_legacy_log(tmp_path: Path):
         raw_responses={"chef": "{}", "assistant": "{}"},
         parsed_responses={
             "chef": AgentTurnResponse(analysis="a", plan="[NONE]", say="[NOTHING]"),
-            "assistant": AgentTurnResponse(analysis="b", plan="[NONE]", say="[NOTHING]"),
+            "assistant": AgentTurnResponse(analysis="b", plan="pickup(egg,ingredient_dispenser)", say="[NOTHING]"),
         },
         validator_errors={"chef": [], "assistant": []},
-        joint_action=["STAY", "STAY"],
+        joint_action=["[NONE]", "pickup(egg,ingredient_dispenser)"],
+        low_level_actions=["STAY", "WEST"],
         score_delta=0,
         cumulative_score=0,
         order="boiled_egg",

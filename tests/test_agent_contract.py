@@ -1,6 +1,7 @@
 import pytest
 
 from vision_overcooked.adapters.agent import OpenAIVisionAgent, validate_plan_string
+from vision_overcooked.adapters.environment import EnvironmentAdapter
 from vision_overcooked.schemas import AgentConfig, AgentTurnResponse
 
 
@@ -20,16 +21,36 @@ def test_agent_turn_response_rejects_missing_required_field():
         AgentTurnResponse.from_raw_json('{"analysis":"ok","plan":"[NONE]"}')
 
 
-@pytest.mark.parametrize("plan", ["[NONE]", "NORTH", "SOUTH", "EAST", "WEST", "STAY", "INTERACT", "wait(1)"])
-def test_validator_accepts_supported_plan_strings(plan: str):
-    result = validate_plan_string(plan)
+@pytest.mark.parametrize(
+    "role, plan",
+    [
+        ("chef", "[NONE]"),
+        ("chef", "wait(1)"),
+        ("chef", "pickup(egg,counter)"),
+        ("chef", "put_obj_in_utensil(pot0)"),
+        ("chef", "cook(pot0)"),
+        ("assistant", "pickup(egg,ingredient_dispenser)"),
+        ("assistant", "place_obj_on_counter()"),
+        ("assistant", "cut(chopping_board0)"),
+    ],
+)
+def test_validator_accepts_supported_plan_strings(role: str, plan: str):
+    adapter = EnvironmentAdapter()
+    result = validate_plan_string(plan, role=role, mdp=adapter.mdp)
     assert result.valid is True
 
 
 def test_validator_rejects_unsupported_macro_action():
-    result = validate_plan_string("pickup(onion,counter)")
+    adapter = EnvironmentAdapter()
+    result = validate_plan_string("SOUTH", role="chef", mdp=adapter.mdp)
     assert result.valid is False
-    assert result.execution_action == "STAY"
+    assert "Low-level movement actions are unsupported" in result.errors[0]
+
+
+def test_validator_rejects_role_incompatible_macro_action():
+    adapter = EnvironmentAdapter()
+    result = validate_plan_string("cook(pot0)", role="assistant", mdp=adapter.mdp)
+    assert result.valid is False
 
 
 def test_openai_agent_builds_prompt_with_context_and_feedback(monkeypatch: pytest.MonkeyPatch):
@@ -47,7 +68,7 @@ def test_openai_agent_builds_prompt_with_context_and_feedback(monkeypatch: pytes
     assert "role=chef" in prompt_text
     assert "bring the egg" in prompt_text
     assert "Plan cannot be empty." in prompt_text
-    assert "analysis, plan, say" in prompt_text
+    assert "pickup(obj,source)" in prompt_text
 
 
 def test_openai_agent_request_input_includes_image(monkeypatch: pytest.MonkeyPatch):

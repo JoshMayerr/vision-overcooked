@@ -68,6 +68,7 @@ class EnvironmentAdapter:
         self.layout = layout
         self.horizon = horizon
         self.tile_size = tile_size
+        self.current_order: str | None = None
         self.mdp = OvercookedGridworld.from_layout_name(layout)
         self.env = OvercookedEnv(self.mdp, horizon=horizon)
 
@@ -83,12 +84,16 @@ class EnvironmentAdapter:
         return tasks
 
     def reset(self, order: str) -> EnvironmentSnapshot:
+        self.current_order = order
         self.mdp = OvercookedGridworld.from_layout_name(self.layout)
         self.mdp.start_order_list = [order]
         self.mdp.one_task_mode = True
         self.env = OvercookedEnv(self.mdp, horizon=self.horizon)
         self.env.reset()
         return self.snapshot(order)
+
+    def current_state(self):
+        return self.env.state
 
     def snapshot(self, order: str) -> EnvironmentSnapshot:
         state = self.env.state

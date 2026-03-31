@@ -87,6 +87,7 @@ class TurnRecord(BaseModel):
     parsed_responses: dict[str, AgentTurnResponse]
     validator_errors: dict[str, list[str]]
     joint_action: list[str]
+    low_level_actions: list[str] = Field(default_factory=list)
     score_delta: float
     cumulative_score: float
     order: str

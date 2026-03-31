@@ -3,23 +3,33 @@ from .agent import (
     AgentResponseFormatError,
     OpenAIVisionAgent,
     OpenAICompatibleVisionAgent,
-    PlanValidationResult,
     StaticJSONAgent,
     build_agent,
-    validate_plan_string,
 )
 from .environment import EnvironmentAdapter
 from .evaluation import EvaluationAdapter
+from .macro_actions import (
+    MacroActionExecutor,
+    MacroExecutionResult,
+    MacroIntentState,
+    MacroPlanValidationResult,
+    action_to_name,
+    validate_plan_string,
+)
 
 __all__ = [
     "EnvironmentAdapter",
     "EvaluationAdapter",
     "AgentInvocationError",
     "AgentResponseFormatError",
+    "MacroActionExecutor",
+    "MacroExecutionResult",
+    "MacroIntentState",
+    "MacroPlanValidationResult",
     "OpenAIVisionAgent",
     "OpenAICompatibleVisionAgent",
-    "PlanValidationResult",
     "StaticJSONAgent",
+    "action_to_name",
     "build_agent",
     "validate_plan_string",
 ]

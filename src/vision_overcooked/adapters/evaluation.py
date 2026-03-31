@@ -59,8 +59,8 @@ class EvaluationAdapter:
         for turn in record.turns:
             total_timestamp.append(turn.timestep)
             for agent_index, role in enumerate(["chef", "assistant"]):
-                plan = turn.parsed_responses[role].plan.strip()
-                if plan not in {"[NONE]", "wait(1)", "STAY"}:
+                plan = turn.joint_action[agent_index].strip()
+                if plan != "[NONE]" and not plan.startswith("wait("):
                     total_action_list[agent_index].append(
                         {"timestamp": turn.timestep, "action": plan}
                     )
@@ -68,10 +68,7 @@ class EvaluationAdapter:
                 {
                     "timestamp": turn.timestep,
                     "order_list": [record.order],
-                    "actions": [
-                        turn.parsed_responses["chef"].plan,
-                        turn.parsed_responses["assistant"].plan,
-                    ],
+                    "actions": turn.joint_action,
                     "map": turn.state_string,
                     "statistical_data": {
                         "score": turn.score_delta,
@@ -128,8 +125,8 @@ class EvaluationAdapter:
                         ],
                         "content": [[], []],
                         "action_list": [
-                            [turn.parsed_responses["chef"].plan],
-                            [turn.parsed_responses["assistant"].plan],
+                            [turn.joint_action[0]],
+                            [turn.joint_action[1]],
                         ],
                         "original_log": json.dumps(turn.raw_responses),
                     },

@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import re
 import tempfile
 from dataclasses import dataclass
 from typing import Protocol
@@ -11,57 +10,8 @@ from typing import Protocol
 import numpy as np
 from openai import OpenAI
 
+from vision_overcooked.adapters.macro_actions import validate_plan_string
 from vision_overcooked.schemas import AgentConfig, AgentTurnResponse
-
-PLAN_PATTERN = re.compile(r"^\[NONE\]$|^wait\(\d+\)$|^(NORTH|SOUTH|EAST|WEST|STAY|INTERACT)$")
-
-
-@dataclass
-class PlanValidationResult:
-    plan: str
-    valid: bool
-    errors: list[str]
-    execution_action: str
-    benchmark_action: str | None
-
-
-def validate_plan_string(plan: str) -> PlanValidationResult:
-    normalized = plan.strip()
-    if not normalized:
-        return PlanValidationResult(
-            plan=plan,
-            valid=False,
-            errors=["Plan cannot be empty."],
-            execution_action="STAY",
-            benchmark_action=None,
-        )
-    if PLAN_PATTERN.match(normalized):
-        if normalized in {"[NONE]", "wait(1)", "wait(2)", "wait(3)"} or normalized.startswith("wait("):
-            return PlanValidationResult(
-                plan=normalized,
-                valid=True,
-                errors=[],
-                execution_action="STAY",
-                benchmark_action=None,
-            )
-        benchmark_action = None if normalized == "STAY" else normalized
-        return PlanValidationResult(
-            plan=normalized,
-            valid=True,
-            errors=[],
-            execution_action=normalized,
-            benchmark_action=benchmark_action,
-        )
-    return PlanValidationResult(
-        plan=normalized,
-        valid=False,
-        errors=[
-            "Unsupported plan string. Use one of [NONE], wait(n), NORTH, SOUTH, EAST, WEST, STAY, or INTERACT."
-        ],
-        execution_action="STAY",
-        benchmark_action=None,
-    )
-
 
 @dataclass
 class AgentActResult:
@@ -124,7 +74,8 @@ class OpenAIVisionAgent:
     PLAN_INSTRUCTIONS = (
         "Return strict JSON with exactly three string keys: analysis, plan, say.\n"
         "Do not wrap the JSON in markdown or any extra text.\n"
-        "The only supported plan values are [NONE], wait(n), NORTH, SOUTH, EAST, WEST, STAY, and INTERACT."
+        "The plan must be one benchmark macro-action only.\n"
+        "Supported forms are [NONE], wait(n), pickup(obj,source), put_obj_in_utensil(utensil), fill_dish_with_food(utensil), place_obj_on_counter(), deliver_soup(), check_recipe(), and role-appropriate utensil operations such as cook(pot0)."
     )
 
     def __init__(self, config: AgentConfig):

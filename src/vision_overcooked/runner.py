@@ -5,6 +5,7 @@ from pathlib import Path
 
 from vision_overcooked.adapters import (
     AgentInvocationError,
+    MacroActionExecutor,
     AgentResponseFormatError,
     EnvironmentAdapter,
     EvaluationAdapter,
@@ -28,6 +29,7 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
     env = EnvironmentAdapter(layout=config.layout, horizon=config.horizon)
     evaluation = EvaluationAdapter(Path(config.results_root))
     snapshot = env.reset(config.order)
+    executor = MacroActionExecutor(env)
 
     chef_agent = build_agent(config.chef)
     assistant_agent = build_agent(config.assistant)
@@ -75,8 +77,9 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
                 raw = result.raw_response
                 prompt_text = result.prompt_text
                 parsed = result.parsed_response
-                validation = validate_plan_string(parsed.plan)
+                validation = validate_plan_string(parsed.plan, role=role, mdp=env.mdp)
                 if validation.valid:
+                    parsed = parsed.model_copy(update={"plan": validation.normalized_plan})
                     break
                 feedback = validation.errors
                 validator_errors[role].extend(validation.errors)
@@ -92,17 +95,31 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
                     plan="[NONE]",
                     say="[NOTHING]",
                 )
+            else:
+                final_validation = validate_plan_string(parsed.plan, role=role, mdp=env.mdp)
+                if not final_validation.valid:
+                    validator_errors[role].extend(final_validation.errors)
+                    parsed = parsed.model_copy(update={"plan": "[NONE]"})
             prompt_texts[role] = prompt_text
             raw_responses[role] = raw
             parsed_responses[role] = parsed
 
-        chef_validation = validate_plan_string(parsed_responses["chef"].plan)
-        assistant_validation = validate_plan_string(parsed_responses["assistant"].plan)
+        for role in ("chef", "assistant"):
+            executor.accept_proposal(role, parsed_responses[role].plan)
+        chef_execution = executor.execute_current_intent("chef")
+        assistant_execution = executor.execute_current_intent("assistant")
+        validator_errors["chef"].extend(chef_execution.errors)
+        validator_errors["assistant"].extend(assistant_execution.errors)
         joint_action = [
-            chef_validation.execution_action,
-            assistant_validation.execution_action,
+            chef_execution.macro_action,
+            assistant_execution.macro_action,
         ]
-        snapshot, reward, done = env.step(tuple(joint_action), config.order)
+        low_level_actions = [
+            chef_execution.low_level_action,
+            assistant_execution.low_level_action,
+        ]
+        snapshot, reward, done = env.step(tuple(low_level_actions), config.order)
+        executor.finalize_step()
         cumulative_score += reward
 
         turn = TurnRecord(
@@ -113,6 +130,7 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
             parsed_responses=parsed_responses,
             validator_errors=validator_errors,
             joint_action=joint_action,
+            low_level_actions=low_level_actions,
             score_delta=reward,
             cumulative_score=cumulative_score,
             order=config.order,
