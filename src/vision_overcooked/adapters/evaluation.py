@@ -148,11 +148,12 @@ class EvaluationAdapter:
 
     def evaluate(self, record: RunRecord) -> Path:
         log_path = self.export_legacy_log(record)
-        save_dir = self.evaluation_root / record.run_name / record.order
+        log_dir = log_path.parent.resolve()
+        save_dir = (self.evaluation_root / record.run_name / record.order).resolve()
         save_dir.mkdir(parents=True, exist_ok=True)
         with _temporary_cwd(UPSTREAM_SRC):
             legacy_module = _load_legacy_eval_module()
-            exp_log = legacy_module.ExpLog(str(log_path.parent))
+            exp_log = legacy_module.ExpLog(str(log_dir))
             evaluation = legacy_module.Evaluation(
                 order_name_list=[record.order] * len(exp_log),
                 exp_log=exp_log,
