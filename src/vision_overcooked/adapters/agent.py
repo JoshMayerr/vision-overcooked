@@ -10,7 +10,6 @@ from typing import Protocol
 import numpy as np
 from openai import OpenAI
 
-from vision_overcooked.adapters.macro_actions import validate_plan_string
 from vision_overcooked.schemas import AgentConfig, AgentTurnResponse
 
 @dataclass
@@ -74,8 +73,9 @@ class OpenAIVisionAgent:
     PLAN_INSTRUCTIONS = (
         "Return strict JSON with exactly three string keys: analysis, plan, say.\n"
         "Do not wrap the JSON in markdown or any extra text.\n"
-        "The plan must be one benchmark macro-action only.\n"
-        "Supported forms are [NONE], wait(n), pickup(obj,source), put_obj_in_utensil(utensil), fill_dish_with_food(utensil), place_obj_on_counter(), deliver_soup(), check_recipe(), and role-appropriate utensil operations such as cook(pot0)."
+        "The plan must be one or more benchmark macro-actions written as strings separated by semicolons.\n"
+        "Supported forms are [NONE], wait(n), pickup(obj,source), put_obj_in_utensil(utensil), fill_dish_with_food(utensil), place_obj_on_counter(), deliver_soup(), check_recipe(), and role-appropriate utensil operations such as cook(pot0).\n"
+        "Use say for coordination. If chef cannot access an ingredient directly, chef should ask assistant to fetch it from ingredient_dispenser and place it on the counter. Assistant should follow direct requests from chef when they are legal."
     )
 
     def __init__(self, config: AgentConfig):

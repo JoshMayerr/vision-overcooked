@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from dataclasses import field
 
 from overcooked_ai_py.data.layouts import read_layout_dict
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import MediumLevelActionManager
-
 
 LOW_LEVEL_ACTIONS = {"NORTH", "SOUTH", "EAST", "WEST", "STAY", "INTERACT"}
 ZERO_ARG_ACTIONS = {"place_obj_on_counter", "deliver_soup", "check_recipe"}
@@ -51,6 +51,7 @@ class MacroPlanValidationResult:
 class MacroIntentState:
     current_plan: str = "[NONE]"
     remaining_wait: int = 0
+    queued_plans: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -80,8 +81,29 @@ def _canonicalize_function_name(name: str) -> str:
     return name.strip().lower().replace(" ", "")
 
 
+def _primary_plan_step(plan: str) -> str:
+    for step in _plan_steps(plan):
+        return step
+    return ""
+
+
+def _plan_steps(plan: str) -> list[str]:
+    steps = []
+    for step in plan.split(";"):
+        candidate = step.strip()
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        if lowered.startswith("say:") or lowered.startswith("say("):
+            continue
+        if any(token in lowered for token in ("request(", "accept(", "deny(", "clarify(")):
+            continue
+        steps.append(candidate)
+    return steps
+
+
 def canonicalize_plan(plan: str, role: str, mdp) -> str:
-    raw = plan.strip()
+    raw = _primary_plan_step(plan)
     if not raw:
         return raw
     if raw.upper() == "[NONE]":
@@ -112,6 +134,35 @@ def _role_operation_names(role: str, mdp) -> set[str]:
     layout = read_layout_dict(mdp.layout_name)
     key = "utensil_agent0" if role == "chef" else "utensil_agent1"
     return set(layout[key].values())
+
+
+def role_action_guide(role: str, mdp) -> str:
+    utensils = ", ".join(mdp.generate_utensil_list())
+    operations = ", ".join(sorted(_role_operation_names(role, mdp))) or "[NONE]"
+    ingredients = ", ".join(sorted(mdp.all_ingredients + ["dish"]))
+    if role == "chef":
+        sources = "counter"
+        extra = (
+            "You cannot access ingredient_dispenser or dish_dispenser directly. "
+            "Use check_recipe(), pickup(...,counter), put_obj_in_utensil(...), cook/bake on your side, "
+            "fill_dish_with_food(...), place_obj_on_counter(), deliver_soup(), wait(n), or [NONE]. "
+            "If an ingredient is needed but not on the counter, ask the assistant in say to pick it up from ingredient_dispenser and place it on the counter."
+        )
+    else:
+        sources = "ingredient_dispenser, dish_dispenser, counter"
+        extra = (
+            "You cannot use check_recipe(). "
+            "Use pickup(...,ingredient_dispenser), pickup(dish,dish_dispenser), pickup(...,counter), "
+            "put_obj_in_utensil(...), cut/stir on your side, place_obj_on_counter(), wait(n), or [NONE]. "
+            "If chef asks for an ingredient from ingredient_dispenser or asks you to place something on the counter, prefer following that request."
+        )
+    return (
+        f"Valid pickup sources for {role}: {sources}. "
+        f"Valid utensil names on this layout: {utensils}. "
+        f"Valid object names on this layout: {ingredients}. "
+        f"Role-specific utensil operations: {operations}. "
+        f"{extra}"
+    )
 
 
 def _build_role_action_space(role: str, mdp) -> set[str]:
@@ -212,12 +263,25 @@ class MacroActionExecutor:
         }
 
     def accept_proposal(self, role: str, proposed_plan: str) -> str:
-        canonical = canonicalize_plan(proposed_plan, role, self.env_adapter.mdp)
+        steps = _plan_steps(proposed_plan)
+        intent = self.intent_state[role]
+        if intent.current_plan != "[NONE]" and (
+            intent.queued_plans or not intent.current_plan.startswith("wait(")
+        ):
+            return intent.current_plan
+        if not steps:
+            return self.intent_state[role].current_plan
+        canonical_steps = [canonicalize_plan(step, role, self.env_adapter.mdp) for step in steps]
+        canonical = canonical_steps[0]
         if canonical == "[NONE]":
             return self.intent_state[role].current_plan
         wait_match = re.fullmatch(r"wait\((\d+)\)", canonical)
         remaining_wait = int(wait_match.group(1)) if wait_match else 0
-        self.intent_state[role] = MacroIntentState(current_plan=canonical, remaining_wait=remaining_wait)
+        self.intent_state[role] = MacroIntentState(
+            current_plan=canonical,
+            remaining_wait=remaining_wait,
+            queued_plans=canonical_steps[1:],
+        )
         return canonical
 
     def execute_current_intent(self, role: str) -> MacroExecutionResult:
@@ -229,11 +293,11 @@ class MacroActionExecutor:
             intent.remaining_wait = max(intent.remaining_wait - 1, 0)
             completed = intent.remaining_wait == 0
             if completed:
-                self.intent_state[role] = MacroIntentState()
+                self._advance_or_clear(role)
             return MacroExecutionResult(intent.current_plan, "STAY", completed, [])
 
         if self._is_completed(role, intent.current_plan, state):
-            self.intent_state[role] = MacroIntentState()
+            self._advance_or_clear(role)
             return MacroExecutionResult(intent.current_plan, "STAY", True, [])
 
         validation_error = self._validate_against_state(role, intent.current_plan, state)
@@ -256,12 +320,28 @@ class MacroActionExecutor:
             return MacroExecutionResult(intent.current_plan, "STAY", False, [])
         return MacroExecutionResult(intent.current_plan, action_to_name(low_level), False, [])
 
-    def finalize_step(self) -> None:
+    def finalize_step(self) -> dict[str, str]:
         state = self.env_adapter.current_state()
+        completed_actions: dict[str, str] = {}
         for role, intent in self.intent_state.items():
             if intent.current_plan != "[NONE]" and not intent.current_plan.startswith("wait("):
                 if self._is_completed(role, intent.current_plan, state):
-                    self.intent_state[role] = MacroIntentState()
+                    completed_actions[role] = intent.current_plan
+                    self._advance_or_clear(role)
+        return completed_actions
+
+    def _advance_or_clear(self, role: str) -> None:
+        intent = self.intent_state[role]
+        if intent.queued_plans:
+            next_plan = intent.queued_plans.pop(0)
+            wait_match = re.fullmatch(r"wait\((\d+)\)", next_plan)
+            self.intent_state[role] = MacroIntentState(
+                current_plan=next_plan,
+                remaining_wait=int(wait_match.group(1)) if wait_match else 0,
+                queued_plans=intent.queued_plans,
+            )
+            return
+        self.intent_state[role] = MacroIntentState()
 
     def _player(self, role: str, state):
         return state.players[0 if role == "chef" else 1]
@@ -287,33 +367,72 @@ class MacroActionExecutor:
         player = self._player(role, state)
         has_object = player.has_object()
         action_name, params = self._parse_action(action)
+        counter_objects = self.env_adapter.mdp.get_counter_objects_dict(
+            state, list(self.env_adapter.mdp.terrain_pos_dict["X"])
+        )
         if action_name == "pickup":
             if len(params) != 2:
                 return "pickup(...) requires object and source."
             if has_object:
                 return f"{role} is already holding an object."
+            obj, source = params
+            if source == "counter":
+                if obj not in counter_objects or len(counter_objects[obj]) == 0:
+                    return f"{obj} is not available on any reachable counter."
+            elif source == "ingredient_dispenser":
+                if obj not in self.env_adapter.mdp.default_ingredients:
+                    return f"{obj} cannot be picked up from ingredient_dispenser."
+            elif source == "dish_dispenser":
+                if obj != "dish":
+                    return "Only dish can be picked up from dish_dispenser."
+            elif source in self.env_adapter.mdp.generate_utensil_list():
+                utensil_states = self.env_adapter.mdp.get_utensil_states(state)
+                if source in utensil_states["empty"]:
+                    return f"{source} is empty."
             return None
         if action_name == "put_obj_in_utensil":
             if not has_object:
                 return f"{role} must be holding an object before using put_obj_in_utensil(...)."
+            utensil = params[0]
+            utensil_states = self.env_adapter.mdp.get_utensil_states(state)
+            if utensil in utensil_states["cooking"] or utensil in utensil_states["ready"]:
+                return f"{utensil} is already busy."
             return None
         if action_name == "fill_dish_with_food":
             if not has_object or player.get_object().name != "dish":
                 return f"{role} must hold a dish before using fill_dish_with_food(...)."
+            utensil = params[0]
+            utensil_states = self.env_adapter.mdp.get_utensil_states(state)
+            if utensil not in utensil_states["ready"]:
+                return f"{utensil} is not ready to fill a dish."
             return None
         if action_name == "place_obj_on_counter":
             if not has_object:
                 return f"{role} is not holding an object to place on a counter."
+            if not self.mlam.place_obj_on_counter_actions(state):
+                return "There is no reachable empty counter to place the object on."
             return None
         if action_name == "deliver_soup":
             if not has_object:
                 return f"{role} is not holding a deliverable object."
+            if self.env_adapter.current_order not in player.get_object().name:
+                return f"{role} is not holding the current recipe output."
             return None
         if action_name == "check_recipe":
             return None if role == "chef" else "Only chef can use check_recipe()."
         if action_name in _role_operation_names(role, self.env_adapter.mdp):
             if has_object:
                 return f"{role} must have empty hands before using {action_name}(...)."
+            utensil = params[0]
+            utensil_pos = self.env_adapter.mdp.utensil_state_dict[utensil]["position"]
+            if not state.has_object(utensil_pos):
+                return f"{utensil} has nothing in it to operate on."
+            obj = state.get_object(utensil_pos)
+            if not hasattr(obj, "state"):
+                return f"{utensil} has no operable object."
+            _, _, cook_time = obj.state
+            if cook_time != 0:
+                return f"{utensil} is already operating or completed."
             return None
         return None
 

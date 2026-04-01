@@ -2,7 +2,7 @@ run_name: pilot_openai_vision_dev
 layout: new_env
 order: boiled_egg
 level: 1
-horizon: 8
+horizon: 20
 max_retries: 1
 results_root: results
 debug_capture_frames: false

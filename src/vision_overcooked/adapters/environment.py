@@ -106,10 +106,36 @@ class EnvironmentAdapter:
             timestep=self.env.t,
         )
 
-    def step(self, joint_actions: tuple[str, str], order: str) -> tuple[EnvironmentSnapshot, float, bool]:
+    def step(
+        self,
+        joint_actions: tuple[str, str],
+        order: str,
+        macro_actions: tuple[str, str] | None = None,
+    ) -> tuple[EnvironmentSnapshot, float, bool]:
         motion_actions = tuple(self._to_motion_action(action) for action in joint_actions)
-        _, reward, done, _ = self.env.step(motion_actions)
+        parm = None
+        if macro_actions is not None:
+            parm = tuple(self._macro_action_param(action) for action in macro_actions)
+        _, reward, done, _ = self.env.step(motion_actions, parm)
         return self.snapshot(order), reward, done
+
+    def _macro_action_param(self, macro_action: str) -> str | None:
+        normalized = macro_action.strip()
+        if not normalized or normalized == "[NONE]" or normalized.startswith("wait("):
+            return None
+        if normalized.startswith("pickup("):
+            payload = normalized[len("pickup(") : -1]
+            parts = [part.strip() for part in payload.split(",")]
+            if len(parts) >= 2:
+                obj, source = parts[0], parts[1]
+                if source == "ingredient_dispenser":
+                    return obj
+                if source not in {"counter", "dish_dispenser"}:
+                    return obj
+            return None
+        if normalized.startswith(("cook(", "cut(", "bake(", "stir(")):
+            return "[START]"
+        return None
 
     def render_frame(self) -> np.ndarray:
         terrain = self.env.mdp.terrain_mtx

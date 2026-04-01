@@ -1,6 +1,7 @@
 import pytest
 
-from vision_overcooked.adapters.agent import OpenAIVisionAgent, validate_plan_string
+from vision_overcooked.adapters import validate_plan_string
+from vision_overcooked.adapters.agent import OpenAIVisionAgent
 from vision_overcooked.adapters.environment import EnvironmentAdapter
 from vision_overcooked.schemas import AgentConfig, AgentTurnResponse
 
@@ -68,7 +69,7 @@ def test_openai_agent_builds_prompt_with_context_and_feedback(monkeypatch: pytes
     assert "role=chef" in prompt_text
     assert "bring the egg" in prompt_text
     assert "Plan cannot be empty." in prompt_text
-    assert "pickup(obj,source)" in prompt_text
+    assert "one or more benchmark macro-actions" in prompt_text
 
 
 def test_openai_agent_request_input_includes_image(monkeypatch: pytest.MonkeyPatch):

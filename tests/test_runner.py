@@ -160,7 +160,7 @@ def test_runner_falls_back_to_safe_noop_after_exhausted_parse_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     clients = [
-        _FakeClient(["not json", '{"analysis":"chef invalid","plan":"SOUTH","say":"bad"}']),
+        _FakeClient(["not json", '{"analysis":"chef invalid","plan":"pickup(egg)","say":"bad"}']),
         _FakeClient(['{"analysis":"assistant ok","plan":"pickup(egg,ingredient_dispenser)","say":"[NOTHING]"}']),
     ]
 
@@ -220,3 +220,22 @@ def test_macro_executor_pickup_intent_persists_until_item_is_acquired():
     assert intent == "pickup(egg,ingredient_dispenser)" or (
         assistant.has_object() and assistant.get_object().name == "egg"
     )
+
+
+def test_macro_executor_rejects_impossible_pickup_from_empty_counter():
+    adapter = EnvironmentAdapter(horizon=4)
+    adapter.reset("boiled_egg")
+    executor = MacroActionExecutor(adapter)
+    error = executor._validate_against_state("chef", "pickup(egg,counter)", adapter.current_state())
+    assert error is not None
+    assert "not available on any reachable counter" in error
+
+
+def test_macro_executor_accepts_upstream_style_multi_step_plan_and_executes_first_action():
+    adapter = EnvironmentAdapter(horizon=4)
+    adapter.reset("boiled_egg")
+    executor = MacroActionExecutor(adapter)
+    first = "pickup(egg,ingredient_dispenser);place_obj_on_counter()".split(";")[0]
+    executor.accept_proposal("assistant", first)
+    result = executor.execute_current_intent("assistant")
+    assert result.macro_action == "pickup(egg,ingredient_dispenser)"

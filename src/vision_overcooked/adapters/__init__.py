@@ -14,6 +14,7 @@ from .macro_actions import (
     MacroIntentState,
     MacroPlanValidationResult,
     action_to_name,
+    role_action_guide,
     validate_plan_string,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "StaticJSONAgent",
     "action_to_name",
     "build_agent",
+    "role_action_guide",
     "validate_plan_string",
 ]

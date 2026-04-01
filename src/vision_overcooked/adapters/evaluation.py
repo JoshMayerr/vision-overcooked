@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import sys
 from contextlib import contextmanager
 from datetime import datetime
@@ -145,12 +146,17 @@ class EvaluationAdapter:
 
     def evaluate(self, record: RunRecord) -> Path:
         log_path = self.export_legacy_log(record)
-        log_dir = log_path.parent.resolve()
+        isolated_log_dir = (self.evaluation_root / ".tmp_logs" / record.run_name / record.order).resolve()
+        if isolated_log_dir.exists():
+            shutil.rmtree(isolated_log_dir)
+        isolated_log_dir.mkdir(parents=True, exist_ok=True)
+        isolated_log_path = isolated_log_dir / log_path.name
+        isolated_log_path.write_text(log_path.read_text())
         save_dir = (self.evaluation_root / record.run_name / record.order).resolve()
         save_dir.mkdir(parents=True, exist_ok=True)
         with _temporary_cwd(UPSTREAM_SRC):
             legacy_module = _load_legacy_eval_module()
-            exp_log = legacy_module.ExpLog(str(log_dir))
+            exp_log = legacy_module.ExpLog(str(isolated_log_dir))
             evaluation = legacy_module.Evaluation(
                 order_name_list=[record.order] * len(exp_log),
                 exp_log=exp_log,

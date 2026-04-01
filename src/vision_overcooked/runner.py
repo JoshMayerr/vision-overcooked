@@ -5,23 +5,80 @@ from pathlib import Path
 
 from vision_overcooked.adapters import (
     AgentInvocationError,
-    MacroActionExecutor,
     AgentResponseFormatError,
     EnvironmentAdapter,
     EvaluationAdapter,
+    MacroActionExecutor,
     build_agent,
+    role_action_guide,
     validate_plan_string,
 )
 from vision_overcooked.schemas import AgentTurnResponse, PilotRunConfig, RunRecord, TurnRecord
 
 
-def _role_context(role: str, order: str, state_string: str, timestep: int) -> str:
+def _counter_summary(env: EnvironmentAdapter) -> str:
+    state = env.current_state()
+    counter_objects = env.mdp.get_counter_objects_dict(
+        state, list(env.mdp.terrain_pos_dict["X"])
+    )
+    if not counter_objects:
+        return "reachable_counters=empty"
+    parts = []
+    for name, positions in sorted(counter_objects.items()):
+        if positions:
+            parts.append(f"{name}:{len(positions)}")
+    return "reachable_counters=" + (", ".join(parts) if parts else "empty")
+
+
+def _utensil_summary(env: EnvironmentAdapter) -> str:
+    state = env.current_state()
+    utensil_states = env.mdp.get_utensil_states(state)
+    segments = []
+    for bucket in ("empty", "cooking", "ready", "full", "partially_full", "wrong"):
+        values = utensil_states.get(bucket, [])
+        if values:
+            segments.append(f"{bucket}={','.join(values)}")
+    return "utensils=" + ("; ".join(segments) if segments else "none")
+
+
+def _recipe_requirement_summary(env: EnvironmentAdapter, order: str) -> str:
+    for utensil_kind, recipes in env.mdp.recipe_config["recipes"].items():
+        if order in recipes:
+            ingredients = recipes[order]["recipe"]
+            cook_time = recipes[order]["cook_time"]
+            return (
+                f"recipe_requirement=to make {order}, use {utensil_kind} with ingredients "
+                f"{', '.join(ingredients)}; cook_time={cook_time}"
+            )
+    return f"recipe_requirement=unknown for {order}"
+
+
+def _player_summary(env: EnvironmentAdapter) -> str:
+    state = env.current_state()
+    summaries = []
+    for role, index in (("chef", 0), ("assistant", 1)):
+        player = state.players[index]
+        held = player.held_object.name if player.held_object is not None else "nothing"
+        summaries.append(f"{role}_holds={held}")
+    return "; ".join(summaries)
+
+
+def _role_context(
+    role: str,
+    order: str,
+    state_string: str,
+    timestep: int,
+    action_guide: str,
+    state_summary: str,
+) -> str:
     recipe_line = order if role == "chef" else "unknown_to_assistant"
     return (
         f"role={role}\n"
         f"timestep={timestep}\n"
         f"recipe_context={recipe_line}\n"
         f"state=\n{state_string}\n"
+        f"state_summary={state_summary}\n"
+        f"action_guide={action_guide}\n"
     )
 
 
@@ -43,6 +100,14 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
         raw_responses = {}
         parsed_responses = {}
         validator_errors = {"chef": [], "assistant": []}
+        state_summary = " | ".join(
+            [
+                _recipe_requirement_summary(env, config.order),
+                _player_summary(env),
+                _counter_summary(env),
+                _utensil_summary(env),
+            ]
+        )
 
         for role, agent in (("chef", chef_agent), ("assistant", assistant_agent)):
             teammate_role = "assistant" if role == "chef" else "chef"
@@ -51,12 +116,22 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
             raw = ""
             prompt_text = ""
             invocation_error: AgentInvocationError | None = None
+            teammate_message = last_messages[teammate_role]
+            if teammate_role in parsed_responses:
+                teammate_message = parsed_responses[teammate_role].say
             for _ in range(config.max_retries + 1):
                 try:
                     result = agent.act(
                         snapshot.frame,
-                        _role_context(role, config.order, snapshot.state_string, snapshot.timestep),
-                        last_messages[teammate_role],
+                        _role_context(
+                            role,
+                            config.order,
+                            snapshot.state_string,
+                            snapshot.timestep,
+                            role_action_guide(role, env.mdp),
+                            state_summary,
+                        ),
+                        teammate_message,
                         feedback,
                     )
                 except AgentResponseFormatError as exc:
@@ -79,7 +154,6 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
                 parsed = result.parsed_response
                 validation = validate_plan_string(parsed.plan, role=role, mdp=env.mdp)
                 if validation.valid:
-                    parsed = parsed.model_copy(update={"plan": validation.normalized_plan})
                     break
                 feedback = validation.errors
                 validator_errors[role].extend(validation.errors)
@@ -118,7 +192,11 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
             chef_execution.low_level_action,
             assistant_execution.low_level_action,
         ]
-        snapshot, reward, done = env.step(tuple(low_level_actions), config.order)
+        snapshot, reward, done = env.step(
+            tuple(low_level_actions),
+            config.order,
+            tuple(joint_action),
+        )
         executor.finalize_step()
         cumulative_score += reward
 
