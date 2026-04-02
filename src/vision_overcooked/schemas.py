@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -43,6 +44,32 @@ class AgentTurnResponse(BaseModel):
         except ValidationError as exc:
             raise ValueError(f"Agent output failed schema validation: {exc}") from exc
 
+    @classmethod
+    def from_upstream_text(cls, raw: str, role: str) -> "AgentTurnResponse":
+        role_name = "Chef" if role == "chef" else "Assistant"
+        section_pattern = re.compile(
+            rf"(?P<label>{role_name}\s+(?:analysis|plan|say))\s*:?\s*",
+            re.IGNORECASE,
+        )
+        matches = list(section_pattern.finditer(raw))
+        sections: dict[str, str] = {}
+        for index, match in enumerate(matches):
+            label = match.group("label").split()[-1].lower()
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+            sections[label] = raw[start:end].strip()
+
+        if not {"analysis", "plan", "say"}.issubset(sections):
+            raise ValueError(
+                "Agent output must follow upstream text format with analysis, plan, and say sections."
+            )
+
+        return cls(
+            analysis=sections["analysis"],
+            plan=sections["plan"],
+            say=sections["say"] or "[NOTHING]",
+        )
+
 
 class AgentConfig(BaseModel):
     role: Literal["chef", "assistant"]
@@ -60,6 +87,7 @@ class AgentConfig(BaseModel):
 
 class PilotRunConfig(BaseModel):
     run_name: str
+    controller: Literal["local", "upstream_vision"] = "local"
     layout: str = "new_env"
     order: str
     level: int = Field(ge=1, le=6)

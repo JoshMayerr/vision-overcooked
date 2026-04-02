@@ -12,6 +12,21 @@ def test_agent_turn_response_requires_strict_json():
     assert parsed.plan == "[NONE]"
 
 
+def test_agent_turn_response_parses_upstream_text():
+    payload = "Chef analysis: ok\nChef say: [NOTHING]\nChef plan: wait(1)"
+    parsed = AgentTurnResponse.from_upstream_text(payload, "chef")
+    assert parsed.analysis == "ok"
+    assert parsed.plan == "wait(1)"
+    assert parsed.say == "[NOTHING]"
+
+
+def test_agent_turn_response_parses_plan_before_say_too():
+    payload = "Assistant analysis: ok\nAssistant plan: [NOTHING]\nAssistant say: Can you help me make a plan?"
+    parsed = AgentTurnResponse.from_upstream_text(payload, "assistant")
+    assert parsed.plan == "[NOTHING]"
+    assert parsed.say == "Can you help me make a plan?"
+
+
 def test_agent_turn_response_rejects_non_json():
     with pytest.raises(ValueError, match="valid JSON"):
         AgentTurnResponse.from_raw_json("not json")
@@ -26,6 +41,7 @@ def test_agent_turn_response_rejects_missing_required_field():
     "role, plan",
     [
         ("chef", "[NONE]"),
+        ("chef", "[NOTHING]"),
         ("chef", "wait(1)"),
         ("chef", "pickup(egg,counter)"),
         ("chef", "put_obj_in_utensil(pot0)"),
@@ -69,7 +85,9 @@ def test_openai_agent_builds_prompt_with_context_and_feedback(monkeypatch: pytes
     assert "role=chef" in prompt_text
     assert "bring the egg" in prompt_text
     assert "Plan cannot be empty." in prompt_text
-    assert "one or more benchmark macro-actions" in prompt_text
+    assert "Chef analysis:" in prompt_text
+    assert "Chef say:" in prompt_text
+    assert "Do not use JSON" in prompt_text
 
 
 def test_openai_agent_request_input_includes_image(monkeypatch: pytest.MonkeyPatch):

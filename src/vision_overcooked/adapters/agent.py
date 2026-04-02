@@ -71,11 +71,17 @@ class StaticJSONAgent:
 
 class OpenAIVisionAgent:
     PLAN_INSTRUCTIONS = (
-        "Return strict JSON with exactly three string keys: analysis, plan, say.\n"
-        "Do not wrap the JSON in markdown or any extra text.\n"
-        "The plan must be one or more benchmark macro-actions written as strings separated by semicolons.\n"
-        "Supported forms are [NONE], wait(n), pickup(obj,source), put_obj_in_utensil(utensil), fill_dish_with_food(utensil), place_obj_on_counter(), deliver_soup(), check_recipe(), and role-appropriate utensil operations such as cook(pot0).\n"
-        "Use say for coordination. If chef cannot access an ingredient directly, chef should ask assistant to fetch it from ingredient_dispenser and place it on the counter. Assistant should follow direct requests from chef when they are legal."
+        "Respond in upstream benchmark text format using exactly these three sections in order:\n"
+        "{role_name} analysis: <your reasoning>\n"
+        "{role_name} say: <message to teammate or [NOTHING]>\n"
+        "{role_name} plan: <one or more benchmark macro-actions separated by semicolons>\n"
+        "Do not use JSON. Do not add markdown.\n"
+        "Do not use coordinates, arrows, or grid positions inside plan arguments. Use only benchmark tokens like counter, ingredient_dispenser, dish_dispenser, pot0, chopping_board0, oven0, blender0, egg, dish, etc.\n"
+        "Supported plan forms are [NONE], [NOTHING], wait(n), pickup(obj,source), put_obj_in_utensil(utensil), fill_dish_with_food(utensil), place_obj_on_counter(), deliver_soup(), check_recipe(), and role-appropriate utensil operations such as cook(pot0).\n"
+        "Use say for coordination. If chef cannot access an ingredient directly, chef should ask assistant to fetch it from ingredient_dispenser and place it on the counter. Assistant should follow direct requests from chef when they are legal.\n"
+        "If you use say to ask your teammate to do something this turn, your own plan should usually be [NONE] or wait(n) until the handoff is complete.\n"
+        "If assistant does not know the recipe and chef has not given a direct request, assistant should ask chef for a plan in say and use [NONE]. Do not take ingredients from the counter unless chef explicitly asked for that or you are finishing a previously requested multi-step plan.\n"
+        "If the current order is already cooking in a utensil, do not restart the recipe with a new raw ingredient. Wait until the utensil is ready, then continue from that ready utensil state."
     )
 
     def __init__(self, config: AgentConfig):
@@ -110,8 +116,9 @@ class OpenAIVisionAgent:
     ) -> str:
         teammate_text = teammate_message or "[NOTHING]"
         feedback = "\n".join(validator_feedback or []) or "[NONE]"
+        role_name = "Chef" if self.role == "chef" else "Assistant"
         return (
-            f"{self.PLAN_INSTRUCTIONS}\n\n"
+            f"{self.PLAN_INSTRUCTIONS.format(role_name=role_name)}\n\n"
             f"Role:\n{self.role}\n\n"
             f"Context:\n{text_context}\n"
             f"Teammate message:\n{teammate_text}\n\n"
@@ -133,28 +140,9 @@ class OpenAIVisionAgent:
             }
         ]
 
-    def _response_text_format(self) -> dict[str, object]:
-        return {
-            "format": {
-                "type": "json_schema",
-                "name": "overcooked_turn_response",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "analysis": {"type": "string"},
-                        "plan": {"type": "string"},
-                        "say": {"type": "string"},
-                    },
-                    "required": ["analysis", "plan", "say"],
-                    "additionalProperties": False,
-                },
-            }
-        }
-
     def _parse_response(self, raw_response: str, prompt_text: str) -> AgentTurnResponse:
         try:
-            return AgentTurnResponse.from_raw_json(raw_response)
+            return AgentTurnResponse.from_upstream_text(raw_response, self.role)
         except ValueError as exc:
             raise AgentResponseFormatError(
                 str(exc),
@@ -175,7 +163,6 @@ class OpenAIVisionAgent:
             response = self.client.responses.create(
                 model=self.model_name,
                 input=request_input,
-                text=self._response_text_format(),
             )
         except Exception as exc:
             raise AgentInvocationError(

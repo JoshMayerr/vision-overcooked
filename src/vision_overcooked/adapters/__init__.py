@@ -17,6 +17,7 @@ from .macro_actions import (
     role_action_guide,
     validate_plan_string,
 )
+from .upstream_bridge import UpstreamVisionController
 
 __all__ = [
     "EnvironmentAdapter",
@@ -33,5 +34,6 @@ __all__ = [
     "action_to_name",
     "build_agent",
     "role_action_guide",
+    "UpstreamVisionController",
     "validate_plan_string",
 ]

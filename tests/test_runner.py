@@ -5,6 +5,7 @@ import pytest
 from vision_overcooked.adapters import MacroActionExecutor
 from vision_overcooked.adapters.environment import EnvironmentAdapter
 from vision_overcooked.adapters.agent import OpenAIVisionAgent
+from vision_overcooked.adapters.upstream_bridge import VisionBackedModule
 from vision_overcooked.runner import run_pilot_experiment
 from vision_overcooked.schemas import PilotRunConfig
 
@@ -76,8 +77,8 @@ def test_runner_executes_openai_backend_with_mocked_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     clients = [
-        _FakeClient(['{"analysis":"chef ok","plan":"[NONE]","say":"go"}']),
-        _FakeClient(['{"analysis":"assistant ok","plan":"pickup(egg,ingredient_dispenser)","say":"[NOTHING]"}']),
+        _FakeClient(["Chef analysis: chef ok\nChef plan: [NONE]\nChef say: go"]),
+        _FakeClient(["Assistant analysis: assistant ok\nAssistant plan: pickup(egg,ingredient_dispenser)\nAssistant say: [NOTHING]"]),
     ]
 
     def fake_create_client(self):
@@ -114,15 +115,136 @@ def test_runner_executes_openai_backend_with_mocked_client(
     assert Path(result.evaluation_result_path).exists()
 
 
+def test_runner_executes_upstream_vision_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class _FakeTurnResult:
+        def __init__(self, role: str):
+            self.low_level_action = "STAY"
+            self.macro_action = "[NONE]"
+            self.raw_response = (
+                f"{role.title()} analysis: ok\n{role.title()} say: [NOTHING]\n{role.title()} plan: [NONE]"
+            )
+            self.prompt_text = "prompt"
+            self.parsed_response = {
+                "analysis": "ok",
+                "plan": "[NONE]",
+                "say": "[NOTHING]",
+            }
+            self.validator_errors = []
+
+    class _FakeController:
+        def __init__(self, env, chef, assistant):
+            self.env = env
+
+        def set_frame(self, frame):
+            self.frame = frame
+
+        def act(self, role: str):
+            from vision_overcooked.schemas import AgentTurnResponse
+
+            result = _FakeTurnResult(role)
+            result.parsed_response = AgentTurnResponse.model_validate(result.parsed_response)
+            return result
+
+    monkeypatch.setattr("vision_overcooked.runner.UpstreamVisionController", _FakeController)
+
+    config = PilotRunConfig(
+        run_name="pytest-upstream-vision",
+        controller="upstream_vision",
+        layout="new_env",
+        order="boiled_egg",
+        level=1,
+        horizon=1,
+        max_retries=0,
+        results_root=str(tmp_path),
+        chef={
+            "role": "chef",
+            "backend": "openai_vision",
+            "model_name": "gpt-4.1-mini",
+        },
+        assistant={
+            "role": "assistant",
+            "backend": "openai_vision",
+            "model_name": "gpt-4.1-mini",
+        },
+    )
+    result = run_pilot_experiment(config)
+    assert result.turns[0].joint_action == ["[NONE]", "[NONE]"]
+    assert result.turns[0].low_level_actions == ["STAY", "STAY"]
+    assert Path(result.evaluation_result_path).exists()
+
+
+def test_upstream_vision_module_sends_system_and_image(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _FakeResponse:
+        def __init__(self, output_text: str):
+            self.output_text = output_text
+
+    class _FakeResponsesAPI:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _FakeResponse(
+                "Chef analysis: ok\nChef say: [NOTHING]\nChef plan: [NONE]"
+            )
+
+    class _FakeClient:
+        def __init__(self):
+            self.responses = _FakeResponsesAPI()
+
+    class _FakeUpstreamModule:
+        def __init__(self, role_messages, model, retrival_method, K):
+            self.current_user_message = {"content": "Upstream user prompt"}
+            self.instruction_head_list = role_messages
+
+        def query_messages(self, rethink):
+            return [
+                {"role": "system", "content": "Upstream system prompt"},
+                {"role": "user", "content": "Upstream user prompt"},
+            ]
+
+    class _Owner:
+        current_frame = pytest.importorskip("numpy").zeros((2, 2, 3), dtype="uint8")
+
+    fake_client = _FakeClient()
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("vision_overcooked.adapters.upstream_bridge.OpenAI", lambda api_key: fake_client)
+
+    module = VisionBackedModule(
+        _FakeUpstreamModule,
+        owner=_Owner(),
+        role_messages=[{"role": "system", "content": ""}],
+        model="gpt-4.1-mini",
+        api_key_env="OPENAI_API_KEY",
+    )
+    monkeypatch.setattr(
+        VisionBackedModule,
+        "_frame_to_data_url",
+        lambda self, frame: "data:image/png;base64,FAKE",
+    )
+
+    output, _ = module.query()
+    assert output.startswith("Chef analysis:")
+    call = fake_client.responses.calls[0]
+    assert call["input"][0] == {"role": "system", "content": "Upstream system prompt"}
+    user_content = call["input"][1]["content"]
+    assert user_content[0] == {"type": "input_text", "text": "Upstream user prompt"}
+    assert user_content[1]["type"] == "input_image"
+
+
 def test_runner_retries_invalid_json_then_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     clients = [
         _FakeClient([
             "not json",
-            '{"analysis":"chef retry ok","plan":"wait(1)","say":"waiting"}',
+            "Chef analysis: chef retry ok\nChef plan: wait(1)\nChef say: waiting",
         ]),
-        _FakeClient(['{"analysis":"assistant ok","plan":"pickup(egg,ingredient_dispenser)","say":"[NOTHING]"}']),
+        _FakeClient(["Assistant analysis: assistant ok\nAssistant plan: pickup(egg,ingredient_dispenser)\nAssistant say: [NOTHING]"]),
     ]
 
     def fake_create_client(self):
@@ -153,15 +275,15 @@ def test_runner_retries_invalid_json_then_succeeds(
     )
     result = run_pilot_experiment(config)
     assert result.turns[0].parsed_responses["chef"].plan == "wait(1)"
-    assert any("valid JSON" in msg for msg in result.turns[0].validator_errors["chef"])
+    assert any("upstream text format" in msg for msg in result.turns[0].validator_errors["chef"])
 
 
 def test_runner_falls_back_to_safe_noop_after_exhausted_parse_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     clients = [
-        _FakeClient(["not json", '{"analysis":"chef invalid","plan":"pickup(egg)","say":"bad"}']),
-        _FakeClient(['{"analysis":"assistant ok","plan":"pickup(egg,ingredient_dispenser)","say":"[NOTHING]"}']),
+        _FakeClient(["not json", "Chef analysis: chef invalid\nChef plan: pickup(egg)\nChef say: bad"]),
+        _FakeClient(["Assistant analysis: assistant ok\nAssistant plan: pickup(egg,ingredient_dispenser)\nAssistant say: [NOTHING]"]),
     ]
 
     def fake_create_client(self):

@@ -9,6 +9,7 @@ from vision_overcooked.adapters import (
     EnvironmentAdapter,
     EvaluationAdapter,
     MacroActionExecutor,
+    UpstreamVisionController,
     build_agent,
     role_action_guide,
     validate_plan_string,
@@ -53,6 +54,22 @@ def _recipe_requirement_summary(env: EnvironmentAdapter, order: str) -> str:
     return f"recipe_requirement=unknown for {order}"
 
 
+def _role_state_summary(env: EnvironmentAdapter, role: str, order: str) -> str:
+    recipe_summary = (
+        _recipe_requirement_summary(env, order)
+        if role == "chef"
+        else "recipe_requirement=unknown_to_assistant"
+    )
+    return " | ".join(
+        [
+            recipe_summary,
+            _player_summary(env),
+            _counter_summary(env),
+            _utensil_summary(env),
+        ]
+    )
+
+
 def _player_summary(env: EnvironmentAdapter) -> str:
     state = env.current_state()
     summaries = []
@@ -86,6 +103,8 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
     env = EnvironmentAdapter(layout=config.layout, horizon=config.horizon)
     evaluation = EvaluationAdapter(Path(config.results_root))
     snapshot = env.reset(config.order)
+    if config.controller == "upstream_vision":
+        return _run_upstream_vision_experiment(config, env, evaluation, snapshot)
     executor = MacroActionExecutor(env)
 
     chef_agent = build_agent(config.chef)
@@ -100,15 +119,6 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
         raw_responses = {}
         parsed_responses = {}
         validator_errors = {"chef": [], "assistant": []}
-        state_summary = " | ".join(
-            [
-                _recipe_requirement_summary(env, config.order),
-                _player_summary(env),
-                _counter_summary(env),
-                _utensil_summary(env),
-            ]
-        )
-
         for role, agent in (("chef", chef_agent), ("assistant", assistant_agent)):
             teammate_role = "assistant" if role == "chef" else "chef"
             feedback = []
@@ -119,6 +129,7 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
             teammate_message = last_messages[teammate_role]
             if teammate_role in parsed_responses:
                 teammate_message = parsed_responses[teammate_role].say
+            state_summary = _role_state_summary(env, role, config.order)
             for _ in range(config.max_retries + 1):
                 try:
                     result = agent.act(
@@ -241,6 +252,98 @@ def run_pilot_experiment(config: PilotRunConfig) -> RunRecord:
     updated = record.model_copy(
         update={
             "benchmark_log_path": str((Path(config.results_root) / "legacy_logs" / config.run_name / config.order).resolve()),
+            "evaluation_result_path": str(evaluation_path),
+        }
+    )
+    run_path.write_text(json.dumps(updated.model_dump(mode="json"), indent=2))
+    return updated
+
+
+def _run_upstream_vision_experiment(
+    config: PilotRunConfig,
+    env: EnvironmentAdapter,
+    evaluation: EvaluationAdapter,
+    snapshot,
+) -> RunRecord:
+    controller = UpstreamVisionController(env, config.chef, config.assistant)
+    turns: list[TurnRecord] = []
+    cumulative_score = 0.0
+    success = False
+
+    for timestep in range(config.horizon):
+        controller.set_frame(snapshot.frame)
+        chef_result = controller.act("chef")
+        assistant_result = controller.act("assistant")
+
+        prompt_texts = {
+            "chef": chef_result.prompt_text,
+            "assistant": assistant_result.prompt_text,
+        }
+        raw_responses = {
+            "chef": chef_result.raw_response,
+            "assistant": assistant_result.raw_response,
+        }
+        parsed_responses = {
+            "chef": chef_result.parsed_response,
+            "assistant": assistant_result.parsed_response,
+        }
+        validator_errors = {
+            "chef": chef_result.validator_errors,
+            "assistant": assistant_result.validator_errors,
+        }
+        joint_action = [chef_result.macro_action, assistant_result.macro_action]
+        low_level_actions = [
+            chef_result.low_level_action,
+            assistant_result.low_level_action,
+        ]
+
+        snapshot, reward, done = env.step(
+            tuple(low_level_actions),
+            config.order,
+            tuple(joint_action),
+        )
+        cumulative_score += reward
+
+        turns.append(
+            TurnRecord(
+                timestep=timestep,
+                state_string=snapshot.state_string,
+                prompt_texts=prompt_texts,
+                raw_responses=raw_responses,
+                parsed_responses=parsed_responses,
+                validator_errors=validator_errors,
+                joint_action=joint_action,
+                low_level_actions=low_level_actions,
+                score_delta=reward,
+                cumulative_score=cumulative_score,
+                order=config.order,
+            )
+        )
+        if done:
+            success = reward > 0 or success
+            break
+
+    record = RunRecord(
+        run_name=config.run_name,
+        layout=config.layout,
+        order=config.order,
+        level=config.level,
+        success=success,
+        horizon=config.horizon,
+        turns=turns,
+    )
+
+    runs_dir = Path(config.results_root) / "runs" / config.run_name
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_path = runs_dir / f"{config.order}.json"
+    run_path.write_text(json.dumps(record.model_dump(mode="json"), indent=2))
+
+    evaluation_path = evaluation.evaluate(record)
+    updated = record.model_copy(
+        update={
+            "benchmark_log_path": str(
+                (Path(config.results_root) / "legacy_logs" / config.run_name / config.order).resolve()
+            ),
             "evaluation_result_path": str(evaluation_path),
         }
     )

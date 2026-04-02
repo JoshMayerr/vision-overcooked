@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 
 from overcooked_ai_py.data.layouts import read_layout_dict
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.planning.planners import MediumLevelActionManager
+from overcooked_ai_py.planning.search import find_path, get_intersect_counter, query_counter_states
 
 LOW_LEVEL_ACTIONS = {"NORTH", "SOUTH", "EAST", "WEST", "STAY", "INTERACT"}
 ZERO_ARG_ACTIONS = {"place_obj_on_counter", "deliver_soup", "check_recipe"}
@@ -106,7 +108,7 @@ def canonicalize_plan(plan: str, role: str, mdp) -> str:
     raw = _primary_plan_step(plan)
     if not raw:
         return raw
-    if raw.upper() == "[NONE]":
+    if raw.upper() in {"[NONE]", "[NOTHING]", "[EMPTY]"}:
         return "[NONE]"
     if raw.upper() in LOW_LEVEL_ACTIONS:
         return raw.upper()
@@ -136,15 +138,26 @@ def _role_operation_names(role: str, mdp) -> set[str]:
     return set(layout[key].values())
 
 
+def _role_accessible_utensils(role: str, mdp) -> list[str]:
+    layout = read_layout_dict(mdp.layout_name)
+    key = "utensil_agent0" if role == "chef" else "utensil_agent1"
+    accessible = []
+    for utensil in layout[key]:
+        for utensil_name in mdp.generate_utensil_list():
+            if utensil in utensil_name and utensil_name not in accessible:
+                accessible.append(utensil_name)
+    return accessible
+
+
 def role_action_guide(role: str, mdp) -> str:
-    utensils = ", ".join(mdp.generate_utensil_list())
+    utensils = ", ".join(_role_accessible_utensils(role, mdp)) or "[NONE]"
     operations = ", ".join(sorted(_role_operation_names(role, mdp))) or "[NONE]"
     ingredients = ", ".join(sorted(mdp.all_ingredients + ["dish"]))
     if role == "chef":
         sources = "counter"
         extra = (
             "You cannot access ingredient_dispenser or dish_dispenser directly. "
-            "Use check_recipe(), pickup(...,counter), put_obj_in_utensil(...), cook/bake on your side, "
+            "Use check_recipe(), pickup(...,counter), put_obj_in_utensil(...) only for utensils in your space, cook/bake on your side, "
             "fill_dish_with_food(...), place_obj_on_counter(), deliver_soup(), wait(n), or [NONE]. "
             "If an ingredient is needed but not on the counter, ask the assistant in say to pick it up from ingredient_dispenser and place it on the counter."
         )
@@ -153,12 +166,13 @@ def role_action_guide(role: str, mdp) -> str:
         extra = (
             "You cannot use check_recipe(). "
             "Use pickup(...,ingredient_dispenser), pickup(dish,dish_dispenser), pickup(...,counter), "
-            "put_obj_in_utensil(...), cut/stir on your side, place_obj_on_counter(), wait(n), or [NONE]. "
-            "If chef asks for an ingredient from ingredient_dispenser or asks you to place something on the counter, prefer following that request."
+            "put_obj_in_utensil(...) only for utensils in your space, cut/stir on your side, place_obj_on_counter(), wait(n), or [NONE]. "
+            "If chef asks for an ingredient from ingredient_dispenser or asks you to place something on the counter, prefer following that request. "
+            "If chef asks for an action outside your space, explain that and use [NONE] instead of taking a different counter item."
         )
     return (
         f"Valid pickup sources for {role}: {sources}. "
-        f"Valid utensil names on this layout: {utensils}. "
+        f"Valid utensil names in your space: {utensils}. "
         f"Valid object names on this layout: {ingredients}. "
         f"Role-specific utensil operations: {operations}. "
         f"{extra}"
@@ -473,7 +487,9 @@ class MacroActionExecutor:
         if action_name == "fill_dish_with_food":
             return self.mlam.go_to_utensil_actions(state, params[0], agent_index)
         if action_name == "place_obj_on_counter":
-            motion_goals = self.mlam.place_obj_on_counter_actions(state)
+            motion_goals = self._find_shared_counters(state, role)
+            if not motion_goals:
+                motion_goals = self.mlam.place_obj_on_counter_actions(state)
             if motion_goals:
                 return motion_goals
             return self.mlam._get_ml_actions_for_positions(self.env_adapter.mdp.get_empty_counter_locations(state))
@@ -485,6 +501,29 @@ class MacroActionExecutor:
             return self.mlam.wait_actions(player)
         return self.mlam.wait_actions(player)
 
+    def _find_shared_counters(self, state, role: str):
+        counter_states = query_counter_states(self.env_adapter.mdp, state)
+        counter_list = get_intersect_counter(
+            state.players_pos_and_or[self._agent_index(role)],
+            state.players_pos_and_or[1 - self._agent_index(role)],
+            self.env_adapter.mdp,
+            self.mlam,
+        )
+        empty_shared = [counter for counter in counter_list if counter_states[counter] == " "]
+        return self.mlam._get_ml_actions_for_positions(empty_shared)
+
+    def _real_time_plan(self, start_pos_and_or, goal, state, role: str):
+        terrain = {
+            "matrix": deepcopy(self.mlam.mdp.terrain_mtx),
+            "height": len(self.mlam.mdp.terrain_mtx),
+            "width": len(self.mlam.mdp.terrain_mtx[0]),
+        }
+        other_pos_and_or = state.players_pos_and_or[1 - self._agent_index(role)]
+        action, plan_cost = find_path(start_pos_and_or, other_pos_and_or, goal, terrain)
+        if action is None:
+            return None, plan_cost
+        return [action], plan_cost
+
     def _choose_lowest_cost_action(self, role: str, motion_goals, state):
         player = self._player(role, state)
         best_action = None
@@ -492,7 +531,9 @@ class MacroActionExecutor:
         for goal in motion_goals:
             if not self.mlam.motion_planner.is_valid_motion_start_goal_pair(player.pos_and_or, goal):
                 continue
-            action_plan, _, plan_cost = self.mlam.motion_planner.get_plan(player.pos_and_or, goal)
+            action_plan, plan_cost = self._real_time_plan(player.pos_and_or, goal, state, role)
+            if action_plan is None:
+                action_plan, _, plan_cost = self.mlam.motion_planner.get_plan(player.pos_and_or, goal)
             if plan_cost < min_cost:
                 min_cost = plan_cost
                 best_action = action_plan[0]
